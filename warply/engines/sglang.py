@@ -7,10 +7,10 @@ class SGLangAdapter:
     """Render SGLang prefill/decode/router process configs."""
 
     def render_prefill(self, plan: DeploymentPlan) -> dict[str, object]:
-        return self._render_worker(plan=plan, pool=plan.prefill, mode="prefill")
+        return self.render_worker(plan=plan, pool=plan.prefill, mode="prefill")
 
     def render_decode(self, plan: DeploymentPlan) -> dict[str, object]:
-        return self._render_worker(plan=plan, pool=plan.decode, mode="decode")
+        return self.render_worker(plan=plan, pool=plan.decode, mode="decode")
 
     def render_router(self, plan: DeploymentPlan) -> dict[str, object]:
         return {
@@ -37,13 +37,15 @@ class SGLangAdapter:
     def openai_base_url(self, plan: DeploymentPlan) -> str:
         return plan.routing.endpoint
 
-    def _render_worker(
+    def render_worker(
         self,
         *,
         plan: DeploymentPlan,
         pool: PoolPlan,
         mode: str,
+        port: int | None = None,
     ) -> dict[str, object]:
+        worker_port = port if port is not None else pool.base_port
         return {
             "name": f"sglang-{mode}",
             "module": "sglang.launch_server",
@@ -53,7 +55,7 @@ class SGLangAdapter:
                 "--host",
                 "0.0.0.0",
                 "--port",
-                str(pool.base_port),
+                str(worker_port),
                 "--tp-size",
                 str(pool.gpus_per_replica),
                 "--disaggregation-mode",
@@ -62,6 +64,15 @@ class SGLangAdapter:
                 plan.kv_transfer,
             ],
             "env": {},
-            "port": pool.base_port,
+            "port": worker_port,
             "replicas": pool.replicas,
         }
+
+    def _render_worker(
+        self,
+        *,
+        plan: DeploymentPlan,
+        pool: PoolPlan,
+        mode: str,
+    ) -> dict[str, object]:
+        return self.render_worker(plan=plan, pool=pool, mode=mode)

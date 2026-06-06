@@ -11,6 +11,8 @@ class Node:
     id: str
     role: str
     host: str
+    port: int
+    cluster_name: str = ""
     healthy: bool = True
 
     def to_dict(self) -> dict[str, object]:
@@ -18,6 +20,8 @@ class Node:
             "id": self.id,
             "role": self.role,
             "host": self.host,
+            "port": self.port,
+            "cluster_name": self.cluster_name,
             "healthy": self.healthy,
         }
 

@@ -7,6 +7,7 @@ from warply.providers.base import Node, ProviderPlugin
 from warply.providers.local_mock import LocalMockProvider
 from warply.router.mock import MockRouter
 from warply.runtime.client import MockOpenAIClient
+from warply.runtime.routing import node_http_url, primary_pool_url, resolve_routing
 from warply.types import EngineState
 
 
@@ -19,13 +20,36 @@ class Runtime:
     router: MockRouter = field(default_factory=MockRouter)
     prefill_nodes: list[Node] = field(default_factory=list)
     decode_nodes: list[Node] = field(default_factory=list)
+    router_nodes: list[Node] = field(default_factory=list)
     endpoint: str | None = None
 
     def up(self) -> None:
         try:
             self.prefill_nodes = self.provider.provision(self.plan.prefill.provision)
             self.decode_nodes = self.provider.provision(self.plan.decode.provision)
-            self.endpoint = self.router.endpoint(self.plan)
+            if self.plan.cloud == "local":
+                router = self.provider.provision_router(
+                    prefill_url="",
+                    decode_url="",
+                )
+                self.router_nodes = [router]
+                self.endpoint = node_http_url(router)
+                return
+
+            prefill_url = primary_pool_url(self.prefill_nodes)
+            decode_url = primary_pool_url(self.decode_nodes)
+            router = self.provider.provision_router(
+                prefill_url=prefill_url,
+                decode_url=decode_url,
+            )
+            self.router_nodes = [router]
+            self.plan = resolve_routing(
+                self.plan,
+                prefill_nodes=self.prefill_nodes,
+                decode_nodes=self.decode_nodes,
+                router_node=router,
+            )
+            self.endpoint = self.plan.routing.endpoint
         except Exception:
             self.down()
             raise
@@ -49,8 +73,8 @@ class Runtime:
                 next_decode_nodes = self.provider.provision(plan.decode.provision)
                 provisioned_nodes.extend(next_decode_nodes)
         except Exception:
-            for nodes in provisioned_nodes:
-                self.provider.teardown([nodes])
+            for node in provisioned_nodes:
+                self.provider.teardown([node])
             raise
 
         if prefill is not None:
@@ -64,8 +88,10 @@ class Runtime:
     def down(self) -> None:
         self.provider.teardown(self.prefill_nodes)
         self.provider.teardown(self.decode_nodes)
+        self.provider.teardown(self.router_nodes)
         self.prefill_nodes = []
         self.decode_nodes = []
+        self.router_nodes = []
         self.endpoint = None
 
     def client(self) -> MockOpenAIClient:

@@ -48,8 +48,31 @@ resp = client.chat.completions.create(
 engine.down()
 ```
 
-Cloud providers such as `cloud="lambda"` compile to provider placeholders today; real
-SkyPilot-backed `up()` wiring is the next integration step.
+Cloud providers compile to `warply://` placeholders before launch; after `up()` on
+`cloud="lambda"`, routing resolves to real node URLs via SkyPilot.
+
+For local dry-run testing of the Lambda path without GPUs or SkyPilot credentials:
+
+```bash
+WARPLY_SKYPILOT_DRY_RUN=1 python -c "
+import warply as wp
+engine = wp.DisaggEngine(
+    model='meta-llama/Llama-3.1-8B',
+    prefill=wp.Pool('1xH100', replicas=1),
+    decode=wp.Pool('1xH100', replicas=1),
+    cloud='lambda',
+)
+engine.up()
+print(engine.status().endpoint)
+engine.down()
+"
+```
+
+For live Lambda integration (requires `pip install warply[cloud]`, SkyPilot + Lambda setup):
+
+```bash
+WARPLY_INTEGRATION=1 pytest tests/test_integration_lambda.py
+```
 
 Context-manager sugar:
 
@@ -120,7 +143,7 @@ Current build order:
 3. ~~Provider plugin skeleton + SGLang adapter + NIXL transfer~~
 4. ~~Mock local router + OpenAI-compatible `client()`~~
 5. ~~No-GPU walking skeleton: `up() → generate() → scale() → down()`~~
-6. SkyPilot Lambda provider implementation
+6. ~~SkyPilot Lambda provider implementation~~
 7. GPU-gated SGLang/NIXL integration test on Lambda
 
 Cloud integration tests are intentionally gated. Once the SkyPilot provider is wired, run them

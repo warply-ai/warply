@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from warply._constants import SUPPORTED_BACKENDS, SUPPORTED_CLOUDS, SUPPORTED_KV_TRANSFERS
 from warply.compiler import compile
 from warply.compiler.plan import DeploymentPlan
 from warply.exceptions import NotReadyError, ValidationError
 from warply.pool import Pool
-from warply.runtime.lifecycle import Runtime, state_after_down
+from warply.runtime.factory import create_runtime
+from warply.runtime.lifecycle import state_after_down
 from warply.runtime.yaml import dump_yaml
 from warply.types import DeploymentStatus, EngineState, PoolStatus
+
+if TYPE_CHECKING:
+    from warply.runtime.lifecycle import Runtime
 
 PoolRole = Literal["prefill", "decode"]
 
@@ -54,14 +58,8 @@ class DisaggEngine:
         if self._state in {EngineState.PROVISIONING, EngineState.READY, EngineState.SCALING}:
             raise NotReadyError(f"up() cannot start while deployment is {self._state.value}.")
 
-        if self.cloud != "local":
-            raise NotImplementedError(
-                "Only cloud='local' mock lifecycle is implemented. "
-                "SkyPilot-backed cloud providers are staged behind the provider interface."
-            )
-
         self._state = EngineState.PROVISIONING
-        self._runtime = Runtime(self.plan())
+        self._runtime = create_runtime(self.plan())
         try:
             self._runtime.up()
         except Exception:
@@ -75,6 +73,11 @@ class DisaggEngine:
 
     def scale(self, *, prefill: int | None = None, decode: int | None = None) -> DisaggEngine:
         """Independently resize either pool."""
+        if self.cloud != "local":
+            raise NotImplementedError(
+                "cloud scale() is not implemented yet. Tear down and relaunch with a new spec."
+            )
+
         if prefill is None and decode is None:
             raise ValidationError("scale() requires at least one of prefill= or decode=.")
 
@@ -176,6 +179,12 @@ class DisaggEngine:
     def plan(self) -> DeploymentPlan:
         """Return the compiled deployment plan for debugging and adapters."""
         return compile(self)
+
+    def deployed_plan(self) -> DeploymentPlan | None:
+        """Return the runtime-resolved plan after up(), if available."""
+        if self._runtime is None:
+            return None
+        return self._runtime.plan
 
     def effective_replicas(self, role: PoolRole) -> int:
         """Return the current desired replica count for a pool role."""

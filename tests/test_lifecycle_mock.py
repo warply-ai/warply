@@ -63,11 +63,17 @@ def test_up_rejects_already_running_engine():
     assert engine.status().prefill.healthy_replicas == 1
 
 
-def test_non_local_up_is_not_implemented_yet():
-    engine = make_engine(cloud="lambda")
+def test_non_local_up_uses_skypilot_dry_run(monkeypatch):
+    monkeypatch.setenv("WARPLY_SKYPILOT_DRY_RUN", "1")
+    engine = make_engine(
+        cloud="lambda",
+        prefill=wp.Pool("1xH100", replicas=1),
+        decode=wp.Pool("1xH100", replicas=1),
+    )
 
-    with pytest.raises(NotImplementedError):
-        engine.up()
+    engine.up()
+    assert engine.status().state is EngineState.READY
+    engine.down()
 
 
 def test_runtime_plan_tracks_scaled_replicas():
@@ -90,7 +96,14 @@ class _FailSecondProvisionProvider:
         self.calls += 1
         if self.calls == 2:
             raise RuntimeError("provision failed")
-        return [Node(id=f"{request.role}-{self.calls}", role=request.role, host="127.0.0.1")]
+        return [
+            Node(
+                id=f"{request.role}-{self.calls}",
+                role=request.role,
+                host="127.0.0.1",
+                port=31000,
+            )
+        ]
 
     def teardown(self, nodes: list[Node]) -> None:
         self.torn_down.extend(node.id for node in nodes)
@@ -105,7 +118,7 @@ def test_up_failure_cleans_runtime_and_stops_engine(monkeypatch):
     def make_runtime(plan):
         return Runtime(plan, provider=provider)
 
-    monkeypatch.setattr("warply.engine.Runtime", make_runtime)
+    monkeypatch.setattr("warply.engine.create_runtime", make_runtime)
     engine = make_engine()
 
     with pytest.raises(RuntimeError, match="provision failed"):
@@ -125,6 +138,7 @@ class _FailDecodeScaleProvider:
                 id=f"{request.role}-{index}",
                 role=request.role,
                 host="127.0.0.1",
+                port=32000 + index,
             )
             for index in range(request.replicas)
         ]
