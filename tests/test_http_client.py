@@ -7,7 +7,7 @@ import pytest
 
 import warply as wp
 from warply.exceptions import HTTPClientError
-from warply.providers.skypilot import SkyPilotProvider
+from warply.providers.skypilot import ClusterLaunch, SkyPilotProvider
 from warply.runtime.client import (
     HTTPOpenAIClient,
     completion_content,
@@ -167,11 +167,17 @@ def test_cloud_generate_posts_to_router(monkeypatch):
     monkeypatch.delenv("WARPLY_SKYPILOT_DRY_RUN", raising=False)
     launches: list[dict[str, str]] = []
 
-    def fake_launch(self, *, yaml_str: str, cluster_name: str) -> str:
+    def fake_launch(self, *, yaml_str: str, cluster_name: str) -> ClusterLaunch:
         launches.append({"yaml": yaml_str, "cluster_name": cluster_name})
-        return "10.0.0.1"
+        return ClusterLaunch(
+            cluster_name=cluster_name,
+            router_host="10.0.0.1",
+            prefill_host="10.0.0.1",
+            decode_host="10.0.0.2",
+        )
 
-    monkeypatch.setattr(SkyPilotProvider, "_launch_task", fake_launch)
+    monkeypatch.setattr(SkyPilotProvider, "_launch_cluster", fake_launch)
+    monkeypatch.setattr(SkyPilotProvider, "_wait_for_router_ready", lambda self, router_host: None)
     monkeypatch.setattr(SkyPilotProvider, "_down_cluster", lambda self, cluster_name: None)
 
     captured: dict[str, object] = {}

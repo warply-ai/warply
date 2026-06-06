@@ -24,6 +24,45 @@ pip install -U pip
 pip install 'sglang[all]'
 """
 
+_DISAGG_CLUSTER_NODES = 2
+
+_WAIT_HTTP_SCRIPT = """\
+wait_for_http() {
+  local url="$1"
+  local label="$2"
+  local pid="${3:-}"
+  local attempts="${4:-120}"
+  local delay="${5:-5}"
+  local i=1
+  while [ "$i" -le "$attempts" ]; do
+    if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+      echo "process for ${label} exited before becoming ready" >&2
+      wait "$pid" || true
+      return 1
+    fi
+    if python - "$url" <<'PY'
+import sys
+import urllib.request
+
+try:
+    with urllib.request.urlopen(sys.argv[1], timeout=5) as response:
+        sys.exit(0 if 200 <= response.status < 300 else 1)
+except Exception:
+    sys.exit(1)
+PY
+    then
+      echo "${label} ready at ${url}"
+      return 0
+    fi
+    echo "waiting for ${label} (${i}/${attempts})..."
+    sleep "$delay"
+    i=$((i + 1))
+  done
+  echo "timed out waiting for ${label} at ${url}" >&2
+  return 1
+}
+"""
+
 
 def cluster_name(*, session_id: str, role: str, index: int) -> str:
     return f"warply-{session_id}-{role}-{index}"
@@ -135,6 +174,7 @@ def build_disagg_cluster_task_yaml(*, plan: DeploymentPlan, session_id: str) -> 
 
     run = f"""\
 set -euo pipefail
+{_WAIT_HTTP_SCRIPT}
 PREFILL_HOST="$(echo "$SKYPILOT_NODE_IPS" | sed -n '1p')"
 DECODE_HOST="$(echo "$SKYPILOT_NODE_IPS" | sed -n '2p')"
 PREFILL_URL="http://${{PREFILL_HOST}}:{plan.prefill.base_port}"
@@ -142,6 +182,9 @@ DECODE_URL="http://${{DECODE_HOST}}:{plan.decode.base_port}"
 
 if [ "${{SKYPILOT_NODE_RANK}}" = "0" ]; then
   {prefill_command} &
+  PREFILL_PID=$!
+  wait_for_http "${{PREFILL_URL}}/health" "prefill" "$PREFILL_PID"
+  wait_for_http "${{DECODE_URL}}/health" "decode"
   {router_command}
 elif [ "${{SKYPILOT_NODE_RANK}}" = "1" ]; then
   {decode_command}
@@ -158,7 +201,7 @@ fi
                 plan.prefill.gpu_type,
                 plan.prefill.gpus_per_replica,
             ),
-            "num_nodes": 2,
+            "num_nodes": _DISAGG_CLUSTER_NODES,
             "network_tier": "best",
         },
         "setup": _WORKER_SETUP,
@@ -172,7 +215,8 @@ def _validate_disagg_cluster_plan(plan: DeploymentPlan) -> None:
 
     if plan.prefill.replicas != 1 or plan.decode.replicas != 1:
         raise ValidationError(
-            "SkyPilot disagg cluster v0 supports replicas=1 for prefill and decode."
+            "SkyPilot disagg cluster v0 requires replicas=1 for prefill and decode "
+            "(1:1 prefill-to-decode node ratio)."
         )
     if plan.prefill.gpu_type != plan.decode.gpu_type:
         raise ValidationError("SkyPilot disagg cluster v0 requires matching GPU types.")

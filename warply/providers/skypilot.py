@@ -2,26 +2,29 @@ from __future__ import annotations
 
 import os
 import uuid
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from warply.compiler.plan import ProvisionRequest
-from warply.exceptions import ValidationError
 from warply.providers.base import Node
 from warply.providers.skypilot_task import (
     build_disagg_cluster_task_yaml,
-    build_router_task_yaml,
-    build_worker_task_yaml,
-    cluster_name,
     disagg_cluster_name,
-    router_cluster_name,
 )
+from warply.runtime.health import wait_for_http_ready
+from warply.runtime.routing import node_http_url
 
 if TYPE_CHECKING:
     from warply.compiler.plan import DeploymentPlan
 
 
-def _pool_base_port(role: str) -> int:
-    return 31000 if role == "prefill" else 32000
+@dataclass(frozen=True)
+class ClusterLaunch:
+    """Resolved hosts for a launched disagg cluster."""
+
+    cluster_name: str
+    router_host: str
+    prefill_host: str
+    decode_host: str
 
 
 class SkyPilotProvider:
@@ -33,46 +36,20 @@ class SkyPilotProvider:
         self._router_node: Node | None = None
         self._downed_clusters: set[str] = set()
 
-    def provision(self, request: ProvisionRequest) -> list[Node]:
-        if request.replicas != 1:
-            raise ValidationError(
-                "SkyPilot v0 supports replicas=1 per pool on cloud. "
-                "Use replicas=1 for prefill and decode until multireplica routing lands."
-            )
-
-        nodes: list[Node] = []
-        pool = self.plan.prefill if request.role == "prefill" else self.plan.decode
-        for index in range(request.replicas):
-            port = _pool_base_port(request.role) + index
-            name = cluster_name(session_id=self.session_id, role=request.role, index=index)
-            yaml_str = build_worker_task_yaml(
-                plan=self.plan,
-                pool=pool,
-                mode=request.role,
-                replica_index=index,
-                session_id=self.session_id,
-            )
-            host = self._launch_task(yaml_str=yaml_str, cluster_name=name)
-            nodes.append(
-                Node(
-                    id=name,
-                    role=request.role,
-                    host=host,
-                    port=port,
-                    cluster_name=name,
-                    healthy=True,
-                )
-            )
-        return nodes
-
     def provision_cluster(self) -> tuple[list[Node], list[Node], Node]:
         name = disagg_cluster_name(session_id=self.session_id)
         yaml_str = build_disagg_cluster_task_yaml(plan=self.plan, session_id=self.session_id)
-        host = self._launch_task(yaml_str=yaml_str, cluster_name=name)
+        launch = self._launch_cluster(yaml_str=yaml_str, cluster_name=name)
+        try:
+            self._wait_for_router_ready(launch.router_host)
+        except Exception:
+            self._down_cluster(name)
+            raise
+
         prefill = Node(
             id=f"{name}-prefill-0",
             role="prefill",
-            host=host,
+            host=launch.prefill_host,
             port=self.plan.prefill.base_port,
             cluster_name=name,
             healthy=True,
@@ -80,7 +57,7 @@ class SkyPilotProvider:
         decode = Node(
             id=f"{name}-decode-0",
             role="decode",
-            host=host,
+            host=launch.decode_host,
             port=self.plan.decode.base_port,
             cluster_name=name,
             healthy=True,
@@ -88,33 +65,13 @@ class SkyPilotProvider:
         router = Node(
             id=f"{name}-router",
             role="router",
-            host=host,
+            host=launch.router_host,
             port=self.plan.routing.router_port,
             cluster_name=name,
             healthy=True,
         )
         self._router_node = router
         return [prefill], [decode], router
-
-    def provision_router(self, *, prefill_url: str, decode_url: str) -> Node:
-        name = router_cluster_name(session_id=self.session_id)
-        yaml_str = build_router_task_yaml(
-            plan=self.plan,
-            prefill_url=prefill_url,
-            decode_url=decode_url,
-            session_id=self.session_id,
-        )
-        host = self._launch_task(yaml_str=yaml_str, cluster_name=name)
-        node = Node(
-            id=name,
-            role="router",
-            host=host,
-            port=self.plan.routing.router_port,
-            cluster_name=name,
-            healthy=True,
-        )
-        self._router_node = node
-        return node
 
     def teardown(self, nodes: list[Node]) -> None:
         for node in nodes:
@@ -128,15 +85,45 @@ class SkyPilotProvider:
     def status(self, nodes: list[Node]) -> list[Node]:
         return nodes
 
-    def _launch_task(self, *, yaml_str: str, cluster_name: str) -> str:
+    def _launch_cluster(self, *, yaml_str: str, cluster_name: str) -> ClusterLaunch:
         if os.environ.get("WARPLY_SKYPILOT_DRY_RUN") == "1":
-            return f"dryrun.{cluster_name}.example"
+            router_host = f"dryrun.{cluster_name}.example"
+            return ClusterLaunch(
+                cluster_name=cluster_name,
+                router_host=router_host,
+                prefill_host=f"dryrun.{cluster_name}.prefill.example",
+                decode_host=f"dryrun.{cluster_name}.decode.example",
+            )
 
         sky = self._import_sky()
         task = sky.Task.from_yaml_str(yaml_str)
         request_id = sky.launch(task, cluster_name=cluster_name)
         _, handle = sky.stream_and_get(request_id)
-        return self._handle_head_ip(handle)
+        router_host, prefill_host, decode_host = self._resolve_cluster_hosts(handle)
+        return ClusterLaunch(
+            cluster_name=cluster_name,
+            router_host=router_host,
+            prefill_host=prefill_host,
+            decode_host=decode_host,
+        )
+
+    def _wait_for_router_ready(self, router_host: str) -> None:
+        if os.environ.get("WARPLY_SKYPILOT_DRY_RUN") == "1":
+            return
+
+        timeout = float(os.environ.get("WARPLY_ROUTER_READY_TIMEOUT", "600"))
+        router_url = node_http_url(
+            Node(
+                id="router",
+                role="router",
+                host=router_host,
+                port=self.plan.routing.router_port,
+            )
+        )
+        try:
+            wait_for_http_ready(router_url, timeout=timeout)
+        except TimeoutError as exc:
+            raise RuntimeError(f"router not ready at {router_url}") from exc
 
     def _down_cluster(self, cluster_name: str) -> None:
         if not cluster_name:
@@ -159,14 +146,53 @@ class SkyPilotProvider:
         return sky
 
     @staticmethod
-    def _handle_head_ip(handle) -> str:
+    def _resolve_cluster_hosts(handle) -> tuple[str, str, str]:
+        """Return (router_host, prefill_host, decode_host) for ranks 0, 0, and 1."""
+        router_host = SkyPilotProvider._resolve_head_ip(handle)
+        node_ips = SkyPilotProvider._collect_node_ips(handle, fallback_head=router_host)
+
+        if len(node_ips) >= 2:
+            return router_host, node_ips[0], node_ips[1]
+
+        if len(node_ips) == 1:
+            return router_host, node_ips[0], node_ips[0]
+
+        raise RuntimeError(
+            f"could not resolve node IPs for SkyPilot cluster "
+            f"{handle.get_cluster_name()!r}"
+        )
+
+    @staticmethod
+    def _collect_node_ips(handle, *, fallback_head: str) -> list[str]:
+        ips: list[str] = []
+
+        if hasattr(handle, "internal_ips"):
+            raw = handle.internal_ips()
+            if raw:
+                ips.extend(str(ip) for ip in raw if ip)
+
+        if hasattr(handle, "external_ips"):
+            raw = handle.external_ips()
+            if raw:
+                for ip in raw:
+                    value = str(ip)
+                    if value and value not in ips:
+                        ips.append(value)
+
+        if fallback_head and fallback_head not in ips:
+            ips.append(fallback_head)
+
+        return ips
+
+    @staticmethod
+    def _resolve_head_ip(handle) -> str:
         if hasattr(handle, "head_ip") and handle.head_ip:
-            return handle.head_ip
+            return str(handle.head_ip)
 
         if hasattr(handle, "external_ips"):
             ips = handle.external_ips()
             if ips:
-                return ips[0]
+                return str(ips[0])
 
         cluster_name = handle.get_cluster_name()
         raise RuntimeError(f"could not resolve external IP for SkyPilot cluster {cluster_name!r}")

@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from warply.compiler.plan import ProvisionRequest
 from warply.providers.base import Node
+
+if TYPE_CHECKING:
+    from warply.compiler.plan import DeploymentPlan
 
 
 def _pool_base_port(role: str) -> int:
@@ -10,6 +15,9 @@ def _pool_base_port(role: str) -> int:
 
 class LocalMockProvider:
     """No-GPU provider that simulates healthy local nodes."""
+
+    def __init__(self, *, plan: DeploymentPlan | None = None) -> None:
+        self.plan = plan
 
     def provision(self, request: ProvisionRequest) -> list[Node]:
         base_port = _pool_base_port(request.role)
@@ -34,6 +42,17 @@ class LocalMockProvider:
             cluster_name="local-router",
             healthy=True,
         )
+
+    def provision_cluster(self) -> tuple[list[Node], list[Node], Node]:
+        if self.plan is None:
+            raise RuntimeError(
+                "LocalMockProvider requires a deployment plan for provision_cluster()."
+            )
+
+        prefill_nodes = self.provision(self.plan.prefill.provision)
+        decode_nodes = self.provision(self.plan.decode.provision)
+        router = self.provision_router()
+        return prefill_nodes, decode_nodes, router
 
     def teardown(self, nodes: list[Node]) -> None:
         return None

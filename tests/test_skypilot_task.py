@@ -70,6 +70,10 @@ def test_disagg_cluster_task_yaml_uses_two_node_best_network():
     assert "network_tier: best" in yaml_str
     assert "SKYPILOT_NODE_RANK" in yaml_str
     assert "SKYPILOT_NODE_IPS" in yaml_str
+    assert "wait_for_http" in yaml_str
+    assert "PREFILL_PID" in yaml_str
+    assert "${PREFILL_URL}/health" in yaml_str
+    assert "${DECODE_URL}/health" in yaml_str
     assert "sglang.launch_server" in yaml_str
     assert "--disaggregation-mode prefill" in yaml_str
     assert "--disaggregation-mode decode" in yaml_str
