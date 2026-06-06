@@ -31,15 +31,15 @@ pip install -e .
 import warply as wp
 
 engine = wp.DisaggEngine(
-    model="meta-llama/Llama-3.1-70B",
-    prefill=wp.Pool(gpus="4xH100", replicas=2),
-    decode=wp.Pool(gpus="2xH100", replicas=4),
+    model="meta-llama/Llama-3.1-8B",
+    prefill=wp.Pool(gpus="1xH100", replicas=1),
+    decode=wp.Pool(gpus="1xH100", replicas=1),
     backend="sglang",
     kv_transfer="nixl",
-    cloud="lambda",
+    cloud="local",
 )
 
-engine.up()                       # provision + deploy + route (coming soon)
+engine.up()                       # mock provision + route; no GPU required
 client = engine.client()
 resp = client.chat.completions.create(
     model="warply",
@@ -47,6 +47,9 @@ resp = client.chat.completions.create(
 )
 engine.down()
 ```
+
+Cloud providers such as `cloud="lambda"` compile to provider placeholders today; real
+SkyPilot-backed `up()` wiring is the next integration step.
 
 Context-manager sugar:
 

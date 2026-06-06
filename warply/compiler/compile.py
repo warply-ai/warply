@@ -19,23 +19,49 @@ def _parse_gpu_spec(gpus: str) -> tuple[int, str]:
     return int(count), gpu_type
 
 
-def _pool_plan(*, role: PoolRole, pool: Pool, cloud: str, base_port: int) -> PoolPlan:
+def _pool_plan(
+    *,
+    role: PoolRole,
+    pool: Pool,
+    cloud: str,
+    base_port: int,
+    replicas: int,
+) -> PoolPlan:
     gpu_count, gpu_type = _parse_gpu_spec(pool.gpus)
     provision = ProvisionRequest(
         role=role,
         cloud=cloud,
         gpu_type=gpu_type,
         gpus_per_replica=gpu_count,
-        replicas=pool.replicas,
+        replicas=replicas,
     )
     return PoolPlan(
         role=role,
         gpus=pool.gpus,
         gpu_type=gpu_type,
         gpus_per_replica=gpu_count,
-        replicas=pool.replicas,
+        replicas=replicas,
         base_port=base_port,
         provision=provision,
+    )
+
+
+def _routing_config(cloud: str) -> RoutingConfig:
+    if cloud == "local":
+        endpoint = f"http://127.0.0.1:{ROUTER_PORT}"
+        prefill_url = f"http://127.0.0.1:{PREFILL_PORT}"
+        decode_url = f"http://127.0.0.1:{DECODE_PORT}"
+    else:
+        endpoint = f"warply://{cloud}/router"
+        prefill_url = f"warply://{cloud}/prefill"
+        decode_url = f"warply://{cloud}/decode"
+
+    return RoutingConfig(
+        mode="prefill_decode",
+        router_port=ROUTER_PORT,
+        endpoint=endpoint,
+        prefill_base_url=prefill_url,
+        decode_base_url=decode_url,
     )
 
 
@@ -46,19 +72,14 @@ def compile(engine: DisaggEngine) -> DeploymentPlan:
         pool=engine.prefill,
         cloud=engine.cloud,
         base_port=PREFILL_PORT,
+        replicas=getattr(engine, "_prefill_replicas", None) or engine.prefill.replicas,
     )
     decode = _pool_plan(
         role="decode",
         pool=engine.decode,
         cloud=engine.cloud,
         base_port=DECODE_PORT,
-    )
-    routing = RoutingConfig(
-        mode="prefill_decode",
-        router_port=ROUTER_PORT,
-        endpoint=f"http://127.0.0.1:{ROUTER_PORT}",
-        prefill_base_url=f"http://127.0.0.1:{PREFILL_PORT}",
-        decode_base_url=f"http://127.0.0.1:{DECODE_PORT}",
+        replicas=getattr(engine, "_decode_replicas", None) or engine.decode.replicas,
     )
     return DeploymentPlan(
         model=engine.model,
@@ -67,5 +88,5 @@ def compile(engine: DisaggEngine) -> DeploymentPlan:
         cloud=engine.cloud,
         prefill=prefill,
         decode=decode,
-        routing=routing,
+        routing=_routing_config(engine.cloud),
     )

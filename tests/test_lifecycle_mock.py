@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
 import warply as wp
+from warply.exceptions import NotReadyError
 from warply.types import EngineState
 
 
@@ -45,3 +48,21 @@ def test_context_manager_uses_mock_lifecycle():
         assert engine.client().base_url == "http://127.0.0.1:8000"
 
     assert engine.status().state is EngineState.STOPPED
+
+
+def test_up_rejects_already_running_engine():
+    engine = make_engine()
+    engine.up()
+
+    with pytest.raises(NotReadyError):
+        engine.up()
+
+    assert engine.status().state is EngineState.READY
+    assert engine.status().prefill.healthy_replicas == 1
+
+
+def test_non_local_up_is_not_implemented_yet():
+    engine = make_engine(cloud="lambda")
+
+    with pytest.raises(NotImplementedError):
+        engine.up()

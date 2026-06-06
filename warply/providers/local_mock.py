@@ -19,7 +19,7 @@ class LocalMockProvider:
         ]
 
     def teardown(self, nodes: list[Node]) -> None:
-        nodes.clear()
+        return None
 
     def status(self, nodes: list[Node]) -> list[Node]:
         return nodes

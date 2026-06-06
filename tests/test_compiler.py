@@ -97,3 +97,23 @@ def test_export_yaml_contains_plan_sections():
     assert "prefill:" in yaml
     assert "decode:" in yaml
     assert "routing:" in yaml
+
+
+def test_plan_reflects_scaled_replicas():
+    engine = make_engine()
+
+    engine.up()
+    engine.scale(decode=3)
+
+    assert engine.status().decode.replicas == 3
+    assert engine.plan().decode.replicas == 3
+    assert engine.plan().decode.provision.replicas == 3
+    assert "replicas: 3" in engine.export_yaml()
+
+
+def test_non_local_plan_uses_provider_placeholders():
+    plan = compile(make_engine(cloud="lambda"))
+
+    assert not plan.routing.endpoint.startswith("http://127.0.0.1")
+    assert plan.routing.endpoint == "warply://lambda/router"
+    assert plan.routing.prefill_base_url == "warply://lambda/prefill"

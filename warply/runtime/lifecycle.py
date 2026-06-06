@@ -55,6 +55,8 @@ class Runtime:
     def down(self) -> None:
         self.provider.teardown(self.prefill_nodes)
         self.provider.teardown(self.decode_nodes)
+        self.prefill_nodes = []
+        self.decode_nodes = []
         self.endpoint = None
 
     def client(self) -> MockOpenAIClient:

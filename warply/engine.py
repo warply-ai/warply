@@ -49,6 +49,9 @@ class DisaggEngine:
 
     def up(self) -> DisaggEngine:
         """Provision, deploy, and wire routing. Blocks until ready."""
+        if self._state in {EngineState.PROVISIONING, EngineState.READY, EngineState.SCALING}:
+            raise NotReadyError(f"up() cannot start while deployment is {self._state.value}.")
+
         if self.cloud != "local":
             raise NotImplementedError(
                 "Only cloud='local' mock lifecycle is implemented. "
