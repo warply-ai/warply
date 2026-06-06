@@ -93,13 +93,39 @@ pip install -e ".[dev]"
 python -c "import warply as wp; print(wp.__version__)"
 ```
 
+No local GPU is required for the current walking skeleton. The `cloud="local"` path uses a
+mock provider/router so SDK lifecycle tests can exercise `up()`, `generate()`, `scale()`, and
+`down()` without starting SGLang.
+
+```python
+with wp.DisaggEngine(
+    model="meta-llama/Llama-3.1-8B",
+    prefill=wp.Pool("1xH100"),
+    decode=wp.Pool("1xH100"),
+    cloud="local",
+) as engine:
+    print(engine.generate("hello"))
+```
+
+For compiler debugging, use `engine.plan()` for the structured `DeploymentPlan` or
+`engine.export_yaml()` for a YAML view of the same artifact.
+
 Current build order:
 
 1. ~~`DisaggEngine` / `Pool` spec + validation~~
-2. Compiler: spec → SGLang disagg flags + routing
-3. Provider plugin (SkyPilot or Ray) + SGLang adapter + NIXL transfer
-4. Router + OpenAI-compatible `client()`
-5. Walking skeleton: `up() → generate() → scale() → down()`
+2. ~~Compiler: spec → SGLang disagg flags + routing~~
+3. ~~Provider plugin skeleton + SGLang adapter + NIXL transfer~~
+4. ~~Mock local router + OpenAI-compatible `client()`~~
+5. ~~No-GPU walking skeleton: `up() → generate() → scale() → down()`~~
+6. SkyPilot Lambda provider implementation
+7. GPU-gated SGLang/NIXL integration test on Lambda
+
+Cloud integration tests are intentionally gated. Once the SkyPilot provider is wired, run them
+from an environment with credentials and GPUs:
+
+```bash
+WARPLY_INTEGRATION=1 pytest tests/test_integration_lambda.py
+```
 
 ## Contributing
 

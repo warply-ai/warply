@@ -4,8 +4,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from warply._constants import SUPPORTED_BACKENDS, SUPPORTED_CLOUDS, SUPPORTED_KV_TRANSFERS
+from warply.compiler import compile
+from warply.compiler.plan import DeploymentPlan
 from warply.exceptions import NotReadyError, ValidationError
 from warply.pool import Pool
+from warply.runtime.lifecycle import Runtime, state_after_down
+from warply.runtime.yaml import dump_yaml
 from warply.types import DeploymentStatus, EngineState, PoolStatus
 
 
@@ -28,6 +32,7 @@ class DisaggEngine:
     _state: EngineState = field(default=EngineState.PENDING, init=False, repr=False)
     _prefill_replicas: int | None = field(default=None, init=False, repr=False)
     _decode_replicas: int | None = field(default=None, init=False, repr=False)
+    _runtime: Runtime | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if not self.model.strip():
@@ -44,10 +49,17 @@ class DisaggEngine:
 
     def up(self) -> DisaggEngine:
         """Provision, deploy, and wire routing. Blocks until ready."""
-        raise NotImplementedError(
-            "DisaggEngine.up() is not implemented yet. "
-            "See CONTRIBUTING.md for the build sequence."
-        )
+        if self.cloud != "local":
+            raise NotImplementedError(
+                "Only cloud='local' mock lifecycle is implemented. "
+                "SkyPilot-backed cloud providers are staged behind the provider interface."
+            )
+
+        self._state = EngineState.PROVISIONING
+        self._runtime = Runtime(self.plan())
+        self._runtime.up()
+        self._state = EngineState.READY
+        return self
 
     def scale(self, *, prefill: int | None = None, decode: int | None = None) -> DisaggEngine:
         """Independently resize either pool."""
@@ -62,10 +74,17 @@ class DisaggEngine:
         if self._state not in {EngineState.READY, EngineState.SCALING}:
             raise NotReadyError("scale() requires a running deployment. Call up() first.")
 
-        raise NotImplementedError(
-            "DisaggEngine.scale() is not implemented yet. "
-            "See CONTRIBUTING.md for the build sequence."
-        )
+        if self._runtime is None:
+            raise NotReadyError("scale() requires an active runtime. Call up() first.")
+
+        self._state = EngineState.SCALING
+        self._runtime.scale(prefill=prefill, decode=decode)
+        if prefill is not None:
+            self._prefill_replicas = prefill
+        if decode is not None:
+            self._decode_replicas = decode
+        self._state = EngineState.READY
+        return self
 
     def status(self) -> DeploymentStatus:
         """Return structured deployment state."""
@@ -78,18 +97,26 @@ class DisaggEngine:
             prefill=PoolStatus(
                 gpus=self.prefill.gpus,
                 replicas=self._prefill_replicas or self.prefill.replicas,
+                healthy_replicas=self._runtime.healthy_prefill() if self._runtime else 0,
             ),
             decode=PoolStatus(
                 gpus=self.decode.gpus,
                 replicas=self._decode_replicas or self.decode.replicas,
+                healthy_replicas=self._runtime.healthy_decode() if self._runtime else 0,
             ),
-            endpoint=None,
+            endpoint=self._runtime.endpoint if self._runtime else None,
         )
 
     def down(self) -> None:
         """Tear down the deployment."""
-        if self._state == EngineState.PENDING:
-            self._state = EngineState.STOPPED
+        if self._runtime is not None:
+            self._state = EngineState.STOPPING
+            self._runtime.down()
+            self._runtime = None
+
+        next_state = state_after_down(self._state)
+        if next_state is EngineState.STOPPED:
+            self._state = next_state
             return
 
         raise NotImplementedError(
@@ -102,10 +129,9 @@ class DisaggEngine:
         if self._state != EngineState.READY:
             raise NotReadyError("client() requires a ready deployment. Call up() first.")
 
-        raise NotImplementedError(
-            "DisaggEngine.client() is not implemented yet. "
-            "See CONTRIBUTING.md for the build sequence."
-        )
+        if self._runtime is None:
+            raise NotReadyError("client() requires an active runtime. Call up() first.")
+        return self._runtime.client()
 
     def generate(self, prompt: str, **kwargs: Any) -> str:
         """Convenience wrapper around the OpenAI-compatible client."""
@@ -122,10 +148,11 @@ class DisaggEngine:
 
     def export_yaml(self) -> str:
         """Emit a raw deployment manifest for power users."""
-        raise NotImplementedError(
-            "DisaggEngine.export_yaml() is not implemented yet. "
-            "See CONTRIBUTING.md for the build sequence."
-        )
+        return dump_yaml(self.plan().to_dict())
+
+    def plan(self) -> DeploymentPlan:
+        """Return the compiled deployment plan for debugging and adapters."""
+        return compile(self)
 
     def __enter__(self) -> DisaggEngine:
         return self.up()

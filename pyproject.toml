@@ -29,6 +29,9 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.4",
 ]
+cloud = [
+    "skypilot",
+]
 
 [project.urls]
 Homepage = "https://github.com/afifi-yusuf/warply"
@@ -48,3 +51,7 @@ select = ["E", "F", "I", "UP"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "gpu: requires real GPUs",
+    "integration: requires external cloud credentials",
+]
