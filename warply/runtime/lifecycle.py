@@ -22,35 +22,44 @@ class Runtime:
     endpoint: str | None = None
 
     def up(self) -> None:
-        self.prefill_nodes = self.provider.provision(self.plan.prefill.provision)
-        self.decode_nodes = self.provider.provision(self.plan.decode.provision)
-        self.endpoint = self.router.endpoint(self.plan)
+        try:
+            self.prefill_nodes = self.provider.provision(self.plan.prefill.provision)
+            self.decode_nodes = self.provider.provision(self.plan.decode.provision)
+            self.endpoint = self.router.endpoint(self.plan)
+        except Exception:
+            self.down()
+            raise
 
-    def scale(self, *, prefill: int | None = None, decode: int | None = None) -> None:
+    def scale(
+        self,
+        *,
+        plan: DeploymentPlan,
+        prefill: int | None = None,
+        decode: int | None = None,
+    ) -> None:
+        next_prefill_nodes = self.prefill_nodes
+        next_decode_nodes = self.decode_nodes
+        provisioned_nodes: list[Node] = []
+
         if prefill is not None:
-            request = self.plan.prefill.provision
+            next_prefill_nodes = self.provider.provision(plan.prefill.provision)
+            provisioned_nodes.extend(next_prefill_nodes)
+        try:
+            if decode is not None:
+                next_decode_nodes = self.provider.provision(plan.decode.provision)
+                provisioned_nodes.extend(next_decode_nodes)
+        except Exception:
+            for nodes in provisioned_nodes:
+                self.provider.teardown([nodes])
+            raise
+
+        if prefill is not None:
             self.provider.teardown(self.prefill_nodes)
-            self.prefill_nodes = self.provider.provision(
-                request.__class__(
-                    role=request.role,
-                    cloud=request.cloud,
-                    gpu_type=request.gpu_type,
-                    gpus_per_replica=request.gpus_per_replica,
-                    replicas=prefill,
-                )
-            )
+            self.prefill_nodes = next_prefill_nodes
         if decode is not None:
-            request = self.plan.decode.provision
             self.provider.teardown(self.decode_nodes)
-            self.decode_nodes = self.provider.provision(
-                request.__class__(
-                    role=request.role,
-                    cloud=request.cloud,
-                    gpu_type=request.gpu_type,
-                    gpus_per_replica=request.gpus_per_replica,
-                    replicas=decode,
-                )
-            )
+            self.decode_nodes = next_decode_nodes
+        self.plan = plan
 
     def down(self) -> None:
         self.provider.teardown(self.prefill_nodes)

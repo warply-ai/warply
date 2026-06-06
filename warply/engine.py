@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from warply._constants import SUPPORTED_BACKENDS, SUPPORTED_CLOUDS, SUPPORTED_KV_TRANSFERS
 from warply.compiler import compile
@@ -11,6 +11,8 @@ from warply.pool import Pool
 from warply.runtime.lifecycle import Runtime, state_after_down
 from warply.runtime.yaml import dump_yaml
 from warply.types import DeploymentStatus, EngineState, PoolStatus
+
+PoolRole = Literal["prefill", "decode"]
 
 
 def _validate_choice(field: str, value: str, allowed: frozenset[str]) -> None:
@@ -60,7 +62,14 @@ class DisaggEngine:
 
         self._state = EngineState.PROVISIONING
         self._runtime = Runtime(self.plan())
-        self._runtime.up()
+        try:
+            self._runtime.up()
+        except Exception:
+            self._runtime.down()
+            self._runtime = None
+            self._state = EngineState.STOPPED
+            raise
+
         self._state = EngineState.READY
         return self
 
@@ -80,12 +89,23 @@ class DisaggEngine:
         if self._runtime is None:
             raise NotReadyError("scale() requires an active runtime. Call up() first.")
 
-        self._state = EngineState.SCALING
-        self._runtime.scale(prefill=prefill, decode=decode)
+        old_prefill_replicas = self._prefill_replicas
+        old_decode_replicas = self._decode_replicas
         if prefill is not None:
             self._prefill_replicas = prefill
         if decode is not None:
             self._decode_replicas = decode
+
+        new_plan = self.plan()
+        self._state = EngineState.SCALING
+        try:
+            self._runtime.scale(plan=new_plan, prefill=prefill, decode=decode)
+        except Exception:
+            self._prefill_replicas = old_prefill_replicas
+            self._decode_replicas = old_decode_replicas
+            self._state = EngineState.READY
+            raise
+
         self._state = EngineState.READY
         return self
 
@@ -156,6 +176,12 @@ class DisaggEngine:
     def plan(self) -> DeploymentPlan:
         """Return the compiled deployment plan for debugging and adapters."""
         return compile(self)
+
+    def effective_replicas(self, role: PoolRole) -> int:
+        """Return the current desired replica count for a pool role."""
+        if role == "prefill":
+            return self._prefill_replicas or self.prefill.replicas
+        return self._decode_replicas or self.decode.replicas
 
     def __enter__(self) -> DisaggEngine:
         return self.up()

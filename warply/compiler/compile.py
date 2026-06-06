@@ -72,14 +72,14 @@ def compile(engine: DisaggEngine) -> DeploymentPlan:
         pool=engine.prefill,
         cloud=engine.cloud,
         base_port=PREFILL_PORT,
-        replicas=getattr(engine, "_prefill_replicas", None) or engine.prefill.replicas,
+        replicas=engine.effective_replicas("prefill"),
     )
     decode = _pool_plan(
         role="decode",
         pool=engine.decode,
         cloud=engine.cloud,
         base_port=DECODE_PORT,
-        replicas=getattr(engine, "_decode_replicas", None) or engine.decode.replicas,
+        replicas=engine.effective_replicas("decode"),
     )
     return DeploymentPlan(
         model=engine.model,
