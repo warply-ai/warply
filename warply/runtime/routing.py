@@ -33,3 +33,15 @@ def resolve_routing(
         decode_base_url=primary_pool_url(decode_nodes),
     )
     return replace(plan, routing=routing)
+
+
+def resolve_router_endpoint(plan: DeploymentPlan, *, router_node: Node) -> DeploymentPlan:
+    """Replace only the public router endpoint after cluster launch."""
+    routing = RoutingConfig(
+        mode=plan.routing.mode,
+        router_port=plan.routing.router_port,
+        endpoint=node_http_url(router_node),
+        prefill_base_url=plan.routing.prefill_base_url,
+        decode_base_url=plan.routing.decode_base_url,
+    )
+    return replace(plan, routing=routing)

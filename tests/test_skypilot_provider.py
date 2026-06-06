@@ -5,7 +5,7 @@ import pytest
 import warply as wp
 from warply.exceptions import ValidationError
 from warply.providers.skypilot import SkyPilotProvider
-from warply.runtime.client import MockOpenAIClient
+from warply.runtime.client import HTTPOpenAIClient
 from warply.types import EngineState
 
 
@@ -28,6 +28,14 @@ def test_skypilot_provider_rejects_multireplica_pool():
         provider.provision(plan.prefill.provision)
 
 
+def test_skypilot_provider_rejects_multireplica_cluster():
+    plan = make_engine(prefill=wp.Pool("1xH100", replicas=2)).plan()
+    provider = SkyPilotProvider(plan=plan, session_id="test1234")
+
+    with pytest.raises(ValidationError, match="replicas=1"):
+        provider.provision_cluster()
+
+
 def test_lambda_up_dry_run(monkeypatch):
     monkeypatch.setenv("WARPLY_SKYPILOT_DRY_RUN", "1")
     engine = make_engine()
@@ -37,17 +45,31 @@ def test_lambda_up_dry_run(monkeypatch):
 
     assert status.state is EngineState.READY
     assert status.endpoint.startswith("http://dryrun.warply-")
+    assert "disagg" in status.endpoint
     assert status.prefill.healthy_replicas == 1
     assert status.decode.healthy_replicas == 1
     assert engine.deployed_plan() is not None
-    assert engine.deployed_plan().routing.prefill_base_url.startswith("http://dryrun.")
-    assert engine.deployed_plan().routing.decode_base_url.startswith("http://dryrun.")
-    assert isinstance(engine.client(), MockOpenAIClient)
+    assert engine.deployed_plan().routing.prefill_base_url == "warply://lambda/prefill"
+    assert engine.deployed_plan().routing.decode_base_url == "warply://lambda/decode"
+    assert isinstance(engine.client(), HTTPOpenAIClient)
     assert engine.client().base_url == status.endpoint
-    assert engine.generate("hello").endswith("hello")
+
+    assert engine._runtime is not None
+    provider = engine._runtime.provider
+    cluster_names = {
+        node.cluster_name
+        for node in [
+            *engine._runtime.prefill_nodes,
+            *engine._runtime.decode_nodes,
+            *engine._runtime.router_nodes,
+        ]
+    }
+    assert cluster_names == {"warply-" + engine._runtime.provider.session_id + "-disagg"}
 
     engine.down()
     assert engine.status().state is EngineState.STOPPED
+    assert engine._runtime is None
+    assert provider._downed_clusters == cluster_names
 
 
 def test_lambda_scale_not_implemented():

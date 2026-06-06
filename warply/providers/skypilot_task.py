@@ -33,6 +33,10 @@ def router_cluster_name(*, session_id: str) -> str:
     return f"warply-{session_id}-router"
 
 
+def disagg_cluster_name(*, session_id: str) -> str:
+    return f"warply-{session_id}-disagg"
+
+
 def accelerator_spec(gpu_type: str, count: int) -> str:
     return f"{gpu_type}:{count}"
 
@@ -95,6 +99,85 @@ def build_router_task_yaml(
         "run": command,
     }
     return dump_yaml(task)
+
+
+def build_disagg_cluster_task_yaml(*, plan: DeploymentPlan, session_id: str) -> str:
+    """Render one multi-node SkyPilot task for v0 prefill/decode disagg."""
+    _validate_disagg_cluster_plan(plan)
+
+    from warply.engines.sglang import SGLangAdapter
+
+    adapter = SGLangAdapter()
+    prefill = adapter.render_worker(
+        plan=plan,
+        pool=plan.prefill,
+        mode="prefill",
+        port=plan.prefill.base_port,
+    )
+    decode = adapter.render_worker(
+        plan=plan,
+        pool=plan.decode,
+        mode="decode",
+        port=plan.decode.base_port,
+    )
+    router_plan = replace_routing_urls(
+        plan,
+        prefill_url="WARPLY_PREFILL_URL",
+        decode_url="WARPLY_DECODE_URL",
+    )
+    router = adapter.render_router(router_plan)
+
+    prefill_command = argv_to_command(str(prefill["module"]), list(prefill["argv"]))
+    decode_command = argv_to_command(str(decode["module"]), list(decode["argv"]))
+    router_command = argv_to_command(str(router["module"]), list(router["argv"]))
+    router_command = router_command.replace("WARPLY_PREFILL_URL", '"$PREFILL_URL"')
+    router_command = router_command.replace("WARPLY_DECODE_URL", '"$DECODE_URL"')
+
+    run = f"""\
+set -euo pipefail
+PREFILL_HOST="$(echo "$SKYPILOT_NODE_IPS" | sed -n '1p')"
+DECODE_HOST="$(echo "$SKYPILOT_NODE_IPS" | sed -n '2p')"
+PREFILL_URL="http://${{PREFILL_HOST}}:{plan.prefill.base_port}"
+DECODE_URL="http://${{DECODE_HOST}}:{plan.decode.base_port}"
+
+if [ "${{SKYPILOT_NODE_RANK}}" = "0" ]; then
+  {prefill_command} &
+  {router_command}
+elif [ "${{SKYPILOT_NODE_RANK}}" = "1" ]; then
+  {decode_command}
+else
+  echo "unsupported SKYPILOT_NODE_RANK=${{SKYPILOT_NODE_RANK}}" >&2
+  exit 1
+fi
+"""
+    task = {
+        "name": disagg_cluster_name(session_id=session_id),
+        "resources": {
+            "cloud": _cloud_field(plan.cloud),
+            "accelerators": accelerator_spec(
+                plan.prefill.gpu_type,
+                plan.prefill.gpus_per_replica,
+            ),
+            "num_nodes": 2,
+            "network_tier": "best",
+        },
+        "setup": _WORKER_SETUP,
+        "run": run,
+    }
+    return dump_yaml(task)
+
+
+def _validate_disagg_cluster_plan(plan: DeploymentPlan) -> None:
+    from warply.exceptions import ValidationError
+
+    if plan.prefill.replicas != 1 or plan.decode.replicas != 1:
+        raise ValidationError(
+            "SkyPilot disagg cluster v0 supports replicas=1 for prefill and decode."
+        )
+    if plan.prefill.gpu_type != plan.decode.gpu_type:
+        raise ValidationError("SkyPilot disagg cluster v0 requires matching GPU types.")
+    if plan.prefill.gpus_per_replica != plan.decode.gpus_per_replica:
+        raise ValidationError("SkyPilot disagg cluster v0 requires matching GPU counts per node.")
 
 
 def replace_routing_urls(

@@ -8,9 +8,11 @@ from warply.compiler.plan import ProvisionRequest
 from warply.exceptions import ValidationError
 from warply.providers.base import Node
 from warply.providers.skypilot_task import (
+    build_disagg_cluster_task_yaml,
     build_router_task_yaml,
     build_worker_task_yaml,
     cluster_name,
+    disagg_cluster_name,
     router_cluster_name,
 )
 
@@ -29,6 +31,7 @@ class SkyPilotProvider:
         self.plan = plan
         self.session_id = session_id or uuid.uuid4().hex[:8]
         self._router_node: Node | None = None
+        self._downed_clusters: set[str] = set()
 
     def provision(self, request: ProvisionRequest) -> list[Node]:
         if request.replicas != 1:
@@ -62,6 +65,37 @@ class SkyPilotProvider:
             )
         return nodes
 
+    def provision_cluster(self) -> tuple[list[Node], list[Node], Node]:
+        name = disagg_cluster_name(session_id=self.session_id)
+        yaml_str = build_disagg_cluster_task_yaml(plan=self.plan, session_id=self.session_id)
+        host = self._launch_task(yaml_str=yaml_str, cluster_name=name)
+        prefill = Node(
+            id=f"{name}-prefill-0",
+            role="prefill",
+            host=host,
+            port=self.plan.prefill.base_port,
+            cluster_name=name,
+            healthy=True,
+        )
+        decode = Node(
+            id=f"{name}-decode-0",
+            role="decode",
+            host=host,
+            port=self.plan.decode.base_port,
+            cluster_name=name,
+            healthy=True,
+        )
+        router = Node(
+            id=f"{name}-router",
+            role="router",
+            host=host,
+            port=self.plan.routing.router_port,
+            cluster_name=name,
+            healthy=True,
+        )
+        self._router_node = router
+        return [prefill], [decode], router
+
     def provision_router(self, *, prefill_url: str, decode_url: str) -> Node:
         name = router_cluster_name(session_id=self.session_id)
         yaml_str = build_router_task_yaml(
@@ -86,6 +120,9 @@ class SkyPilotProvider:
         for node in nodes:
             if node.role == "router":
                 self._router_node = None
+            if node.cluster_name in self._downed_clusters:
+                continue
+            self._downed_clusters.add(node.cluster_name)
             self._down_cluster(node.cluster_name)
 
     def status(self, nodes: list[Node]) -> list[Node]:

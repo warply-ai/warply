@@ -4,9 +4,9 @@ import warply as wp
 
 
 engine = wp.DisaggEngine(
-    model="meta-llama/Llama-3.1-70B",
-    prefill=wp.Pool("4xH100", replicas=2),
-    decode=wp.Pool("2xH100", replicas=4),
+    model="meta-llama/Llama-3.1-8B",
+    prefill=wp.Pool("1xH100", replicas=1),
+    decode=wp.Pool("1xH100", replicas=1),
     cloud="lambda",
 )
 

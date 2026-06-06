@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 
 from warply.compiler.plan import DeploymentPlan
@@ -8,7 +7,7 @@ from warply.providers.base import Node, ProviderPlugin
 from warply.providers.local_mock import LocalMockProvider
 from warply.router.mock import MockRouter
 from warply.runtime.client import HTTPOpenAIClient, MockOpenAIClient
-from warply.runtime.routing import node_http_url, primary_pool_url, resolve_routing
+from warply.runtime.routing import node_http_url, resolve_router_endpoint
 from warply.types import EngineState
 
 
@@ -26,9 +25,9 @@ class Runtime:
 
     def up(self) -> None:
         try:
-            self.prefill_nodes = self.provider.provision(self.plan.prefill.provision)
-            self.decode_nodes = self.provider.provision(self.plan.decode.provision)
             if self.plan.cloud == "local":
+                self.prefill_nodes = self.provider.provision(self.plan.prefill.provision)
+                self.decode_nodes = self.provider.provision(self.plan.decode.provision)
                 router = self.provider.provision_router(
                     prefill_url="",
                     decode_url="",
@@ -37,17 +36,10 @@ class Runtime:
                 self.endpoint = node_http_url(router)
                 return
 
-            prefill_url = primary_pool_url(self.prefill_nodes)
-            decode_url = primary_pool_url(self.decode_nodes)
-            router = self.provider.provision_router(
-                prefill_url=prefill_url,
-                decode_url=decode_url,
-            )
+            self.prefill_nodes, self.decode_nodes, router = self.provider.provision_cluster()
             self.router_nodes = [router]
-            self.plan = resolve_routing(
+            self.plan = resolve_router_endpoint(
                 self.plan,
-                prefill_nodes=self.prefill_nodes,
-                decode_nodes=self.decode_nodes,
                 router_node=router,
             )
             self.endpoint = self.plan.routing.endpoint
@@ -87,9 +79,12 @@ class Runtime:
         self.plan = plan
 
     def down(self) -> None:
-        self.provider.teardown(self.prefill_nodes)
-        self.provider.teardown(self.decode_nodes)
-        self.provider.teardown(self.router_nodes)
+        if self.plan.cloud == "local":
+            self.provider.teardown(self.prefill_nodes)
+            self.provider.teardown(self.decode_nodes)
+            self.provider.teardown(self.router_nodes)
+        else:
+            self.provider.teardown([*self.prefill_nodes, *self.decode_nodes, *self.router_nodes])
         self.prefill_nodes = []
         self.decode_nodes = []
         self.router_nodes = []
@@ -97,7 +92,7 @@ class Runtime:
 
     def client(self) -> HTTPOpenAIClient | MockOpenAIClient:
         base_url = self.endpoint or self.plan.routing.endpoint
-        if self.plan.cloud == "local" or os.environ.get("WARPLY_SKYPILOT_DRY_RUN") == "1":
+        if self.plan.cloud == "local":
             return MockOpenAIClient(base_url=base_url)
         return HTTPOpenAIClient(base_url=base_url)
 

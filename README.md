@@ -48,8 +48,10 @@ resp = client.chat.completions.create(
 engine.down()
 ```
 
-Cloud providers compile to `warply://` placeholders before launch; after `up()` on
-`cloud="lambda"`, routing resolves to real node URLs via SkyPilot.
+Cloud providers compile to `warply://` placeholders before launch. For v0, `cloud="lambda"`
+requires `replicas=1` for prefill and decode, launches one 2-node SkyPilot cluster with
+`network_tier: best`, runs the router on the head node, and resolves the public router endpoint
+after `up()`.
 
 For local dry-run testing of the Lambda path without GPUs or SkyPilot credentials:
 

@@ -165,8 +165,10 @@ def test_normalize_base_url():
 
 def test_cloud_generate_posts_to_router(monkeypatch):
     monkeypatch.delenv("WARPLY_SKYPILOT_DRY_RUN", raising=False)
+    launches: list[dict[str, str]] = []
 
     def fake_launch(self, *, yaml_str: str, cluster_name: str) -> str:
+        launches.append({"yaml": yaml_str, "cluster_name": cluster_name})
         return "10.0.0.1"
 
     monkeypatch.setattr(SkyPilotProvider, "_launch_task", fake_launch)
@@ -189,6 +191,9 @@ def test_cloud_generate_posts_to_router(monkeypatch):
 
     try:
         engine.up()
+        assert len(launches) == 1
+        assert launches[0]["cluster_name"].endswith("-disagg")
+        assert "num_nodes: 2" in launches[0]["yaml"]
         assert isinstance(engine.client(), HTTPOpenAIClient)
         assert engine.generate("hello") == "cloud hello"
         assert captured["url"] == "http://10.0.0.1:8000/v1/chat/completions"
