@@ -3,6 +3,9 @@
 Warply uses SkyPilot as its first provisioning backend. SkyPilot gives Warply reach across many
 clouds, but Warply support is still validated provider by provider.
 
+For the distinction between cloud providers, runtimes, inference backends, and endpoints, see
+[architecture notes](./architecture.md).
+
 ## Current Warply Status
 
 | Provider | Warply status | Notes |
